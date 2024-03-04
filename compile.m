@@ -12,6 +12,8 @@ function compile(mainFile, options)
         options.CodeSignIdentity {mustBeTextScalar} = ""
         options.OutputDir {mustBeTextScalar} = "output";
         options.Name {mustBeTextScalar} = "";
+        options.includeFramework {mustBeNumericOrLogical} = false;
+        options.partialWorkaround {mustBeNumericOrLogical} = false;
     end
     
     if options.Name == ""
@@ -38,6 +40,15 @@ function compile(mainFile, options)
     % Call the compiler.build.standaloneApplication function
     compiler.build.standaloneApplication(opts);
     
+    % Add Framework to the application bundle
+    if options.includeFramework
+        disp("Add Framework to the application bundle")
+        framework_path = "DummyFramework.framework";
+        l_check_output("cp -a " + framework_path + " " + app_path + "/Contents/Resources/");
+        l_codesign(app_path + "/Contents/Resources/DummyFramework.framework/Versions/1.0/Dummy", identity=options.CodeSignIdentity);
+        l_codesign(app_path + "/Contents/Resources/DummyFramework.framework/", identity=options.CodeSignIdentity);
+    end
+    
     % Codesign the application
     disp("Codesign the application")
     l_codesign(app_path + "/Contents/MacOS/hello", "entitlements.plist", identity=options.CodeSignIdentity);
@@ -54,6 +65,9 @@ function compile(mainFile, options)
     % setenv("DITTONORSRC", 'true');
     disp("Make installer")
     installer_path = l_make_installer(app_path, options.OutputDir);
+    if options.partialWorkaround
+        l_fix_bundle(installer_path, app_path);
+    end
     disp("Codesign the installer")
     l_codesign(installer_path, "", identity=options.CodeSignIdentity, deep=false);
     disp("Notarize the installer")
@@ -62,6 +76,16 @@ function compile(mainFile, options)
     % Done
     disp('DONE')
     
+end
+
+function cmdout = l_check_output(cmd)
+    % Run system command, throws error if command fails.
+    % Returns command output
+    disp(cmd)
+    [status, cmdout] = system(cmd, '-echo');
+    if status ~= 0
+        error(cmdout)
+    end
 end
 
 function l_codesign(app_path, entitlements, options)
@@ -89,6 +113,32 @@ function l_codesign(app_path, entitlements, options)
     end
     l_check_output(codesign_opts + " " + app_path);
     
+end
+
+function l_fix_bundle(installer_path, app_path)
+    %FIX_BUNDLE Fix bundle
+    %
+    % Recreate application bundle.zip inside installer.app, Matlab does not seem
+    % to handle symlinks correctly
+
+    arguments
+        installer_path {mustBeFolder}
+        app_path {mustBeFolder}
+    end
+    
+    % Fix the installer bundle
+    disp("+ Fixing installer bundle");
+    old_path = pwd();
+    temp_path = tempname();
+    bundle_path = old_path + "/" + installer_path + "/Contents/Resources/bundle.zip";
+    mkdir(temp_path);
+    cd(temp_path);
+    l_check_output("unzip -o " + bundle_path + " -x 'application/*'");
+    mkdir('application');
+    l_check_output("cp -a " + old_path + "/" + app_path + " application");
+    l_check_output("ditto -c -k . " +bundle_path);
+    cd(old_path);
+    rmdir(temp_path, 's');
 end
 
 function l_notarize(app_path)
@@ -147,14 +197,4 @@ function installer_path = l_make_installer(app_full_path, outdir)
         app_full_path, ...
         app_path + "/requiredMCRProducts.txt", ...
         'Options', opts);
-end
-
-function cmdout = l_check_output(cmd)
-    % Run system command, throws error if command fails.
-    % Returns command output
-    disp(cmd)
-    [status, cmdout] = system(cmd, '-echo');
-    if status ~= 0
-        error(cmdout)
-    end
 end
